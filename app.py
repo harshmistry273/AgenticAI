@@ -212,6 +212,7 @@ def init_state():
         "messages": [],          # [{role, content, events}]
         "is_processing": False,
         "groq_api_key": st.secrets.get("GROQ_API_KEY", os.getenv("GROQ_API_KEY", "")),
+        "selected_model": "openai/gpt-oss-20b",
         "show_tool_results": True,
         "show_thinking": True,
         "total_tool_calls": 0,
@@ -231,7 +232,7 @@ init_state()
 
 with st.sidebar:
     st.markdown("## 🤖 Agentic AI System")
-    st.markdown("*Powered by Groq + Llama 3.3*")
+    st.markdown("*Powered by Groq Cloud*")
     st.divider()
 
     # Stats
@@ -261,6 +262,19 @@ with st.sidebar:
 
     # Settings
     st.markdown("### ⚙️ Settings")
+
+    available_models = [
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+    ]
+    st.session_state.selected_model = st.selectbox(
+        "Groq Model",
+        options=available_models,
+        index=0,
+        help="openai/gpt-oss-20b is ultra-fast and conserves token budget.",
+    )
+
     st.session_state.show_tool_results = st.toggle(
         "Show Tool Results", value=st.session_state.show_tool_results
     )
@@ -491,7 +505,7 @@ def process_message(user_text: str):
 
     # Stream events
     event_display = []
-    for event in run_orchestrator(user_text, history[:-1], client):
+    for event in run_orchestrator(user_text, history[:-1], client, model=st.session_state.selected_model):
         events_log.append({
             "agent_name": event.agent_name,
             "event_type": event.event_type,

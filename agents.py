@@ -21,15 +21,17 @@ load_dotenv()
 
 
 # ─────────────────────────────────────────────
-#  Models
+#  Models (Available on Groq API key)
 # ─────────────────────────────────────────────
 
+# openai/gpt-oss-20b is fast & token-efficient
+# openai/gpt-oss-120b is high-capacity for complex orchestration
 MODELS = {
-    "orchestrator": "llama-3.3-70b-versatile",
-    "research":     "llama-3.3-70b-versatile",
-    "code":         "llama-3.3-70b-versatile",
-    "analysis":     "llama-3.3-70b-versatile",
-    "generalist":   "llama-3.1-8b-instant",
+    "orchestrator": "openai/gpt-oss-20b",
+    "research":     "openai/gpt-oss-20b",
+    "code":         "openai/gpt-oss-20b",
+    "analysis":     "openai/gpt-oss-20b",
+    "generalist":   "openai/gpt-oss-20b",
 }
 
 
@@ -147,14 +149,15 @@ def run_agent(
     agent_key: str,
     messages: list[dict],
     groq_client: Groq,
-    max_iterations: int = 8,
+    max_iterations: int = 4,
+    model: Optional[str] = None,
 ) -> Generator[AgentEvent, None, str]:
     """
     Run an agent and yield events as it executes.
     Returns the final text response.
     """
     config = AGENT_CONFIGS[agent_key]
-    model = MODELS[agent_key]
+    model = model or MODELS.get(agent_key, "openai/gpt-oss-20b")
     agent_name = config["name"]
 
     # Get relevant tool schemas
@@ -170,8 +173,8 @@ def run_agent(
 
     for iteration in range(max_iterations):
         try:
-            # Call Groq
-            kwargs = {"model": model, "messages": full_messages, "max_tokens": 4096, "temperature": 0.7}
+            # Call Groq (compact token budget to conserve quota)
+            kwargs = {"model": model, "messages": full_messages, "max_tokens": 1200, "temperature": 0.5}
             if tool_schemas:
                 kwargs["tools"] = tool_schemas
                 kwargs["tool_choice"] = "auto"
@@ -220,11 +223,12 @@ def run_agent(
                         metadata={"tool": tool_name, "result": tool_result},
                     )
 
-                    # Add tool result to messages
+                    # Truncate if too long to save context tokens
+                    compact_result = tool_result if len(tool_result) <= 1000 else tool_result[:1000] + "... [truncated to save tokens]"
                     full_messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": tool_result,
+                        "content": compact_result,
                     })
 
             else:
@@ -318,6 +322,7 @@ def run_orchestrator(
     conversation_history: list[dict],
     groq_client: Groq,
     on_event=None,
+    model: str = "openai/gpt-oss-20b",
 ) -> Generator[AgentEvent, None, None]:
     """
     Main orchestrator that plans and coordinates sub-agents.
@@ -331,19 +336,19 @@ def run_orchestrator(
 
     sub_agent_results = []
     iteration = 0
-    max_iterations = 10
+    max_iterations = 4
 
     while iteration < max_iterations:
         iteration += 1
 
         try:
             response = groq_client.chat.completions.create(
-                model=MODELS["orchestrator"],
+                model=model,
                 messages=messages,
                 tools=[DELEGATION_SCHEMA],
                 tool_choice="auto",
-                max_tokens=4096,
-                temperature=0.6,
+                max_tokens=1500,
+                temperature=0.5,
             )
 
             msg = response.choices[0].message
@@ -394,9 +399,9 @@ def run_orchestrator(
                     else:
                         sub_messages.append({"role": "user", "content": task})
 
-                    # Run sub-agent
+                    # Run sub-agent with token-efficient model
                     sub_final = ""
-                    for event in run_agent(agent_key, sub_messages, groq_client):
+                    for event in run_agent(agent_key, sub_messages, groq_client, model=model):
                         yield event
                         if event.event_type == "response":
                             sub_final = event.content
@@ -407,8 +412,9 @@ def run_orchestrator(
                         "result": sub_final,
                     })
 
-                    # Add tool result to orchestrator messages
-                    result_summary = f"[{agent_config['name']} Result]\nTask: {task}\n\nResult:\n{sub_final}"
+                    # Add tool result to orchestrator messages (compact to save prompt tokens)
+                    compact_sub_result = sub_final if len(sub_final) <= 1000 else sub_final[:1000] + "... [summary truncated to save tokens]"
+                    result_summary = f"[{agent_config['name']} Result]\nTask: {task}\n\nResult:\n{compact_sub_result}"
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
